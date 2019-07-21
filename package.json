@@ -1,0 +1,19 @@
+{
+  "name": "rock-paper-scissors",
+  "version": "1.0.0",
+  "description": "Rock paper scissors game where players bet ether.",
+  "author": "Aram Elchyan",
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elch-yan/RockPaperScissors.git"
+  },
+  "dependencies": {
+    "openzeppelin-solidity": "github:elch-yan/openzeppelin-contracts#improvement/safemath-custom-error-messages"
+  },
+  "devDependencies": {
+    "chai": "4.2.0",
+    "chai-as-promised": "7.1.1"
+  },
+  "license": "MIT"
+}
