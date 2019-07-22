@@ -32,7 +32,7 @@ contract Taxed is Stoppable {
         return true;
     }
 
-    function collectTax(address taxPayer) internal whenNotPaused returns(bool) {
+    function collectTax(address taxPayer) internal whenRunning returns(bool) {
         emit LogTaxed(taxPayer, tax);
 
         address owner = getOwner();
@@ -41,7 +41,7 @@ contract Taxed is Stoppable {
         return true;
     }
 
-    function claimCollectedTax() external whenNotPaused returns(bool) {
+    function claimCollectedTax() external whenRunning returns(bool) {
         uint256 collected = collectedTax[msg.sender];
         require(collected > 0, "No collected tax to claim!");
 

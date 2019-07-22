@@ -13,8 +13,10 @@ import "./Taxed.sol";
  *
  * Special cases:
  * 1. In case if the second player didn't show up after game closing time first player can claim his win by calling "reportFailedGame" function
- * 2. In case if the first player turnes to be uncooperative (e.g. he does not provide his secret for determination of the winner)
- * second player can claim his win after "closingTime + closingTimeOffset" by calling "reportUncooperativeGame" function
+ * 2. In case if the second player did eventually show up but didn't make a move after "closingTime + closingTimeOffset"
+ * first player can calim his win by calling "reportPlayer2"
+ * 3. In case if the first player turnes uncooperative (e.g. he does not provide his secret for determination of the winner)
+ * second player can claim his win after "closingTime + 2 * closingTimeOffset" by calling "reportPlayer1" function
  */
 contract RockPaperScissors is Taxed {
     enum Moves { UNSET, ROCK, PAPER, SCISSORS }
@@ -83,13 +85,13 @@ contract RockPaperScissors is Taxed {
      * @param bet amount of money needed to join the game
      * @param closingTime duration of the time in milliseconds after which game will be closed for betting
      */
-    function startTheGame(bytes32 gameKey, uint256 bet, uint256 closingTime) public payable whenNotPaused returns(bool) {
+    function startTheGame(bytes32 gameKey, uint256 bet, uint256 closingTime) public payable whenRunning returns(bool) {
+        require(closingTime > 0, "Closing time should be more than 0!");
+        require(closingTime < maxClosingTime, "Closing time should be less than maxClosingTime!");
         require(games[gameKey].bet == 0, "Key already used");
 
         uint256 tax = getTax();
         require(bet > tax, "Bet should be more than tax!");
-        require(closingTime > 0, "Closing time should be more than 0!");
-        require(closingTime < maxClosingTime, "Closing time should be less than maxClosingTime!");
 
         _fundGame(bet);
 
@@ -107,7 +109,7 @@ contract RockPaperScissors is Taxed {
      * @notice This is where second player joins the game
      * @param gameKey key of the game to join
      */
-    function joinTheGame(bytes32 gameKey) public payable whenNotPaused returns(bool) {
+    function joinTheGame(bytes32 gameKey) public payable whenRunning returns(bool) {
         uint256 bet = games[gameKey].bet;
         require(bet > 0, "Game with given key doesn't exist");
         require(games[gameKey].player2 == address(0), "Can't join ongoing game!");
@@ -131,9 +133,9 @@ contract RockPaperScissors is Taxed {
      * first player sees second players "wining" transaction and decides to join the game
      * as a second player with higher amount of gas
      */
-    function makeSecondMove(bytes32 gameKey, Moves move) public whenNotPaused returns(bool) {
-        require(games[gameKey].player2 == msg.sender, "You can't make a move for this game!");
+    function makeSecondMove(bytes32 gameKey, Moves move) public whenRunning returns(bool) {
         require(move != Moves.UNSET, "Invalid move!");
+        require(games[gameKey].player2 == msg.sender, "You can't make a move for this game!");
 
         games[gameKey].move2 = move;
         emit LogSecondMoveMade(msg.sender, gameKey);
@@ -162,7 +164,7 @@ contract RockPaperScissors is Taxed {
      * @param secret secret used in the "game key" generation process
      * @param move first players move used in the "game key" generation process
      */
-    function play(bytes32 secret, Moves move) external whenNotPaused returns(bool) {
+    function play(bytes32 secret, Moves move) external whenRunning returns(bool) {
         bytes32 gameKey = generateGameKey(secret, move);
         Moves move2 = games[gameKey].move2;
         require(move2 != Moves.UNSET, "Game with given secret and move which would be ready to play not found!");
@@ -213,7 +215,7 @@ contract RockPaperScissors is Taxed {
      * @param secret secret used in the "game key" generation process
      * @param move first players move used in the "game key" generation process
      */
-    function reportFailedGame(bytes32 secret, Moves move) public whenNotPaused returns(bool) {
+    function reportFailedGame(bytes32 secret, Moves move) public whenRunning returns(bool) {
         bytes32 gameKey = generateGameKey(secret, move);
         uint256 bet = games[gameKey].bet;
         require(bet > 0, "No active games for given secret and move!");
@@ -235,7 +237,7 @@ contract RockPaperScissors is Taxed {
      * @param secret secret used in the "game key" generation process
      * @param move first players move used in the "game key" generation process
      */
-    function reportPlayer2(bytes32 secret, Moves move) public whenNotPaused returns(bool) {
+    function reportPlayer2(bytes32 secret, Moves move) public whenRunning returns(bool) {
         bytes32 gameKey = generateGameKey(secret, move);
         require(games[gameKey].player2 != address(0), "Game has no second player, it can not be reported!");
         require(games[gameKey].move2 == Moves.UNSET, "Second player made a move, this game can not be reported!");
@@ -256,11 +258,13 @@ contract RockPaperScissors is Taxed {
      * @notice This is where second player can claim his win after (closingTime + 2 * closingTimeOffset) is over
      * @param gameKey game key
      */
-    function reportPlayer1(bytes32 gameKey) public whenNotPaused returns(bool) {
+    function reportPlayer1(bytes32 gameKey) public whenRunning returns(bool) {
         require(games[gameKey].move2 != Moves.UNSET, "Game with given key can not be reported!");
+        address player2 = games[gameKey].player2;
+        require(msg.sender == player2, "Only second player can call this function!");
         require(games[gameKey].closingTime.add(closingTimeOffset).add(closingTimeOffset) < block.timestamp, "Game isn't over yet!");
 
-        address player2 = games[gameKey].player2;
+
         uint256 bet = games[gameKey].bet;
         emit LogFirstPlayerReported(gameKey, player2, bet);
 
@@ -288,7 +292,7 @@ contract RockPaperScissors is Taxed {
      * @notice This is where players can withdraw their funds
      * @param amount amount of wei to withdraw
      */
-    function withdraw(uint256 amount) external whenNotPaused returns(bool) {
+    function withdraw(uint256 amount) external whenRunning returns(bool) {
         uint256 finalFund = funds[msg.sender].sub(amount, "No enough funds!");
 
         funds[msg.sender] = finalFund;

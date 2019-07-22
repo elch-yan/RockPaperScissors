@@ -6,7 +6,7 @@ const RockPaperScissors = artifacts.require('RockPaperScissors');
 
 contract('RockPaperScissors', accounts => {
     // Setup accounts
-    const [ owner, player1, player2, anonymousPlayer ] = accounts;
+    const [ owner, player1, player2 ] = accounts;
 
     // CONSTANTS
     const MOVES = Object.freeze({ UNSET: 0, ROCK: 1, PAPER: 2, SCISSORS: 3 });
@@ -376,7 +376,7 @@ contract('RockPaperScissors', accounts => {
             
             await travelToFuture(20000);
 
-            const txObject = await instance.reportPlayer1(gameKey, { from: anonymousPlayer });
+            const txObject = await instance.reportPlayer1(gameKey, { from: player2 });
             
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
@@ -395,7 +395,7 @@ contract('RockPaperScissors', accounts => {
             
             await travelToFuture(5500);
 
-            await instance.reportPlayer1(gameKey, { from: anonymousPlayer }).should.be.rejectedWith(Error);
+            await instance.reportPlayer1(gameKey, { from: player2 }).should.be.rejectedWith(Error);
         });
 
         it('Should not be able to report first player if second move was not made', async () => {

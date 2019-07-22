@@ -9,9 +9,8 @@ contract Stoppable is Owned {
     event LogPaused(address indexed owner);
     event LogResumed(address indexed owner);
     event LogKilled(address owner);
-    event LogContractBalanceRetrieved(address owner, uint256 balance);
 
-    modifier whenNotPaused() {
+    modifier whenRunning() {
         require(!paused, "Can't perform operation while contract is paused!");
         _;
     }
@@ -25,7 +24,7 @@ contract Stoppable is Owned {
      * @dev When contract is killed, it is also paused, so there's no need to add
      * this modifier on any other function, than kill or resume
      */
-    modifier whenNotKilled() {
+    modifier whenAlive() {
         require(!killed, "Can't perform operation contract is dead!");
         _;
     }
@@ -35,33 +34,23 @@ contract Stoppable is Owned {
         killed = false;
     }
 
-    function pause() external onlyOwner whenNotPaused returns(bool) {
+    function pause() external onlyOwner whenRunning returns(bool) {
         paused = true;
         emit LogPaused(msg.sender);
 
         return true;
     }
 
-    function resume() external onlyOwner whenPaused whenNotKilled returns(bool) {
+    function resume() external onlyOwner whenPaused whenAlive returns(bool) {
         paused = false;
         emit LogResumed(msg.sender);
 
         return true;
     }
 
-    function kill() external onlyOwner whenPaused whenNotKilled returns(bool) {
+    function kill() external onlyOwner whenPaused whenAlive returns(bool) {
         killed = true;
         emit LogKilled(msg.sender);
-
-        return true;
-    }
-
-    function withdrawContractBalance() external onlyOwner returns(bool) {
-        require(killed, "Can't perform operation contract is still alive!");
-
-        emit LogContractBalanceRetrieved(msg.sender, address(this).balance);
-
-        msg.sender.transfer(address(this).balance);
 
         return true;
     }
