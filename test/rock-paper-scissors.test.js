@@ -9,7 +9,7 @@ contract('RockPaperScissors', accounts => {
     const [ owner, player1, player2, anonymousPlayer ] = accounts;
 
     // CONSTANTS
-    const MOVES = Object.freeze({ ROCK: 0, PAPER: 1, SCISSORS: 2 });
+    const MOVES = Object.freeze({ UNSET: 0, ROCK: 1, PAPER: 2, SCISSORS: 3 });
     const MAX_CLOSING_TIME = 10000;
     const CLOSING_TIME_OFFSET = 1000;
     const TAX = 100;
@@ -37,8 +37,8 @@ contract('RockPaperScissors', accounts => {
          * @param [{ b = BET, c = CLOSING_TIME, from = player1, value = fund } = {}]
          * @returns {Promise.<txObject>}
          */
-        async function startTheGame({ key = gameKey, b = BET, c = CLOSING_TIME, from = player1, value = VALUE } = {}) {
-            return instance.startTheGame(key, b, c, { from, value });
+        async function startTheGame({ key = gameKey, bet = BET, closingTime = CLOSING_TIME, from = player1, value = VALUE } = {}) {
+            return instance.startTheGame(key, bet, closingTime, { from, value });
         }
 
         it('Should generate same gameKey with same arguments', async () => {
@@ -58,33 +58,33 @@ contract('RockPaperScissors', accounts => {
                 'LogGameStarted'
             ]);
 
-            // Checking if game have been created 
+            // Checking if game has been created 
             let game = await instance.games.call(gameKey);
-            game = [ game.player1, game.bet ];
-            expect(game).to.deep.equal([ player1, web3.utils.toBN(BET) ]);
+            game = [ game.bet ];
+            expect(game).to.deep.equal([ web3.utils.toBN(BET) ]);
         });
 
         it('Should be able to start a game partially using funds', async () => {
             // Preparing funds
             await startTheGame();
             await travelToFuture(10000);
-            await instance.reportFailedGame(gameKey, { from: player1 });
+            await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player1 });
             
             // Creating new game
             const newBet = 600;
             const newValue = 300;
             const newKey = await instance.generateGameKey(web3.utils.fromAscii('Secret1'), MOVES.SCISSORS, { from: player1 });
-            const txObject = await startTheGame({ key: newKey, b: newBet, value: newValue});
+            const txObject = await startTheGame({ key: newKey, bet: newBet, value: newValue});
 
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
                 'LogGameStarted'
             ]);
 
-            // Checking if game have been created 
+            // Checking if game has been created 
             let game = await instance.games.call(newKey);
-            game = [ game.player1, game.bet ];
-            expect(game).to.deep.equal([ player1, web3.utils.toBN(newBet) ]);
+            game = [ game.bet ];
+            expect(game).to.deep.equal([ web3.utils.toBN(newBet) ]);
 
             // Checking funds
             expect(await instance.funds.call(player1)).to.deep.equal(web3.utils.toBN(BET - (newBet - newValue)));
@@ -94,22 +94,22 @@ contract('RockPaperScissors', accounts => {
             // Preparing funds
             await startTheGame();
             await travelToFuture(10000);
-            await instance.reportFailedGame(gameKey, { from: player1 });
+            await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player1 });
             
             // Creating new game
             const newBet = 300;
             const newKey = await instance.generateGameKey(web3.utils.fromAscii('Secret1'), MOVES.SCISSORS, { from: player1 });
-            const txObject = await startTheGame({ key: newKey, b: newBet, value: 0});
+            const txObject = await startTheGame({ key: newKey, bet: newBet, value: 0});
 
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
                 'LogGameStarted'
             ]);
 
-            // Checking if game have been created 
+            // Checking if game has been created 
             let game = await instance.games.call(newKey);
-            game = [ game.player1, game.bet ];
-            expect(game).to.deep.equal([ player1, web3.utils.toBN(newBet) ]);
+            game = [ game.bet ];
+            expect(game).to.deep.equal([ web3.utils.toBN(newBet) ]);
 
             // Checking funds
             expect(await instance.funds.call(player1)).to.deep.equal(web3.utils.toBN(BET - newBet));
@@ -117,71 +117,88 @@ contract('RockPaperScissors', accounts => {
 
         it('Should be able to join the game with passed value', async () => {
             await startTheGame();
-            const txObject = await instance.joinTheGame(gameKey, MOVES.PAPER, { from: player2, value: VALUE });
+            const txObject = await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
 
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
                 'LogGameJoined'
             ]);
 
-            // Checking if game have been updated
+            // Checking if game has been updated
             let game = await instance.games.call(gameKey);
-            game = [ game.player1, game.player2, game.bet, game.move2 ];
-            expect(game).to.deep.equal([ player1, player2, web3.utils.toBN(BET), web3.utils.toBN(MOVES.PAPER) ]);
+            game = [ game.player2, game.bet ];
+            expect(game).to.deep.equal([ player2, web3.utils.toBN(BET) ]);
         });
 
         it('Should be able to join the game partially using funds', async () => {
             // Preparing funds
-            await startTheGame();
-            await instance.joinTheGame(gameKey, MOVES.PAPER, { from: player2, value: VALUE });
+            const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player2 });
+            const bet = 600;
+            await startTheGame({ key: gameKey, bet, from: player2, value: bet });
             await travelToFuture(10000);
-            await instance.reportUncooperativeGame(gameKey, { from: player2 });
+            await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player2 });
 
             // Joining new game
             const newKey = await instance.generateGameKey(web3.utils.fromAscii('Secret1'), MOVES.SCISSORS, { from: player1 });
             await startTheGame({ key: newKey });
             const newValue = 300;
-            const txObject = await instance.joinTheGame(newKey, MOVES.PAPER, { from: player2, value: newValue });
+            const txObject = await instance.joinTheGame(newKey, { from: player2, value: newValue });
             
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
                 'LogGameJoined'
             ]);
 
-            // Checking if game have been updated
+            // Checking if game has been updated
             let game = await instance.games.call(newKey);
-            game = [ game.player1, game.player2, game.bet, game.move2 ];
-            expect(game).to.deep.equal([ player1, player2, web3.utils.toBN(BET), web3.utils.toBN(MOVES.PAPER) ]);
+            game = [ game.player2, game.bet ];
+            expect(game).to.deep.equal([ player2, web3.utils.toBN(BET) ]);
 
             // Checking funds
-            expect(await instance.funds.call(player2)).to.deep.equal(web3.utils.toBN(2 * BET - TAX - (BET - newValue)));
+            expect(await instance.funds.call(player2)).to.deep.equal(web3.utils.toBN(bet - (BET - newValue)));
         });
 
         it('Should be able to join the game by only using funds', async () => {
             // Preparing funds
-            await startTheGame();
-            await instance.joinTheGame(gameKey, MOVES.PAPER, { from: player2, value: VALUE });
+            const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player2 });
+            const bet = 600;
+            await startTheGame({ key: gameKey, bet, from: player2, value: bet });
             await travelToFuture(10000);
-            await instance.reportUncooperativeGame(gameKey, { from: player2 });
+            await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player2 });
 
             // Joining new game
             const newKey = await instance.generateGameKey(web3.utils.fromAscii('Secret1'), MOVES.SCISSORS, { from: player1 });
             await startTheGame({ key: newKey });
-            const newValue = 300;
-            const txObject = await instance.joinTheGame(newKey, MOVES.PAPER, { from: player2, value: 0 });
+            const txObject = await instance.joinTheGame(newKey, { from: player2, value: 0 });
             
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
                 'LogGameJoined'
             ]);
 
-            // Checking if game have been updated
+            // Checking if game has been updated
             let game = await instance.games.call(newKey);
-            game = [ game.player1, game.player2, game.bet, game.move2 ];
-            expect(game).to.deep.equal([ player1, player2, web3.utils.toBN(BET), web3.utils.toBN(MOVES.PAPER) ]);
+            game = [ game.player2, game.bet ];
+            expect(game).to.deep.equal([ player2, web3.utils.toBN(BET) ]);
 
             // Checking funds
-            expect(await instance.funds.call(player2)).to.deep.equal(web3.utils.toBN(2 * BET - TAX - BET));
+            expect(await instance.funds.call(player2)).to.deep.equal(web3.utils.toBN(bet - BET));
+        });
+
+        it('Should be able to make a second move', async () => {
+            await startTheGame();
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
+            const txObject = await instance.makeSecondMove(gameKey, MOVES.ROCK, { from: player2 });
+
+            // Checking if logs have been written
+            expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
+                'LogSecondMoveMade'
+            ]);
+
+            // Checking if game has been updated
+            let game = await instance.games.call(gameKey);
+            game = [ game.player2, game.move2, game.bet ];
+            expect(game).to.deep.equal([ player2, web3.utils.toBN(MOVES.ROCK), web3.utils.toBN(BET) ]);
         });
     });
 
@@ -196,8 +213,9 @@ contract('RockPaperScissors', accounts => {
         async function playTheGame(move1, move2) {
             const gameKey = await instance.generateGameKey(SECRET, move1, { from: player1 });
             await instance.startTheGame(gameKey, BET, CLOSING_TIME, { from: player1, value: VALUE });
-            await instance.joinTheGame(gameKey, move2, { from: player2, value: VALUE });
-            return instance.play(gameKey, move1, SECRET, { from: anonymousPlayer });
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
+            await instance.makeSecondMove(gameKey, move2, { from: player2 });
+            return instance.play(SECRET, move1, { from: player1 });
         }
 
         /**
@@ -279,13 +297,24 @@ contract('RockPaperScissors', accounts => {
     });
 
     describe('Reported game', () => {
-        it('Should be able to report failed game', async () => {
+        /**
+         * Starts a game with default parameters
+         * 
+         * @returns {Promise.<String>} gameKey
+         */
+        async function startTheGame() {
             const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player1 });
             await instance.startTheGame(gameKey, BET, CLOSING_TIME, { from: player1, value: VALUE });
-            
+
+            return gameKey;
+        };
+
+        it('Should be able to report failed game', async () => {
+            await startTheGame();
+
             await travelToFuture(8000);
 
-            const txObject = await instance.reportFailedGame(gameKey, { from: anonymousPlayer });
+            const txObject = await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player1 });
             
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
@@ -296,26 +325,62 @@ contract('RockPaperScissors', accounts => {
         });
 
         it('Should not be able to report failed game before closing time is over', async () => {
-            const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player1 });
-            await instance.startTheGame(gameKey, BET, CLOSING_TIME, { from: player1, value: VALUE });
-            
+            await startTheGame();
+
             await travelToFuture(3000);
 
-            await instance.reportFailedGame(gameKey, { from: anonymousPlayer }).should.be.rejectedWith(Error);
+            await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player1 }).should.be.rejectedWith(Error);
         });
 
-        it('Should be able to report uncooperative game', async () => {
-            const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player1 });
-            await instance.startTheGame(gameKey, BET, CLOSING_TIME, { from: player1, value: VALUE });
-            await instance.joinTheGame(gameKey, MOVES.ROCK, { from: player2, value: VALUE });
-            
-            await travelToFuture(20000);
+        it('Should be able to report second player', async () => {
+            const gameKey = await startTheGame();
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
 
-            const txObject = await instance.reportUncooperativeGame(gameKey, { from: anonymousPlayer });
+            await travelToFuture(8000);
+
+            const txObject = await instance.reportPlayer2(SECRET, MOVES.SCISSORS, { from: player1 });
             
             // Checking if logs have been written
             expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
-                'LogUncooperativeGame',
+                'LogSecondPlayerReported',
+                'LogTaxed'
+            ]);
+
+            expect(await instance.funds.call(player1), 'Wrong funds for reported game player 1').to.deep.equal(web3.utils.toBN(2 * BET - TAX));
+            expect(await instance.funds.call(player2), 'Wrong funds for reported game player 2').to.deep.equal(web3.utils.toBN(0));
+        });
+
+        it('Should not be able to report second player before (closing time) + (closing time offset) is over', async () => {
+            const gameKey = await startTheGame();
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
+
+            await travelToFuture(5100);
+
+            await instance.reportPlayer2(SECRET, MOVES.SCISSORS, { from: player1 }).should.be.rejectedWith(Error);
+        });
+
+        it('Should not be able to report second player if second move was made', async () => {
+            const gameKey = await startTheGame();
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
+            await instance.makeSecondMove(gameKey, MOVES.ROCK, { from: player2 });
+
+            await travelToFuture(8000);
+
+            await instance.reportPlayer2(SECRET, MOVES.SCISSORS, { from: player1 }).should.be.rejectedWith(Error);
+        });
+
+        it('Should be able to report first player', async () => {
+            const gameKey = await startTheGame();
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
+            await instance.makeSecondMove(gameKey, MOVES.ROCK, { from: player2 });
+            
+            await travelToFuture(20000);
+
+            const txObject = await instance.reportPlayer1(gameKey, { from: anonymousPlayer });
+            
+            // Checking if logs have been written
+            expect(txObject.logs.map(({ event }) => event), 'Problem with logs').to.deep.equal([
+                'LogFirstPlayerReported',
                 'LogTaxed'
             ]);
 
@@ -323,14 +388,23 @@ contract('RockPaperScissors', accounts => {
             expect(await instance.funds.call(player2), 'Wrong funds for reported game player 2').to.deep.equal(web3.utils.toBN(2 * BET - TAX));
         });
 
-        it('Should not be able to report uncooperative game before closing time + closing time offset is over', async () => {
-            const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player1 });
-            await instance.startTheGame(gameKey, BET, CLOSING_TIME, { from: player1, value: VALUE });
-            await instance.joinTheGame(gameKey, MOVES.ROCK, { from: player2, value: VALUE });
+        it('Should not be able to report first player before (closing time) + 2 * (closing time offset) is over', async () => {
+            const gameKey = await startTheGame();
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
+            await instance.makeSecondMove(gameKey, MOVES.ROCK, { from: player2 });
             
             await travelToFuture(5500);
 
-            await instance.reportUncooperativeGame(gameKey, { from: anonymousPlayer }).should.be.rejectedWith(Error);
+            await instance.reportPlayer1(gameKey, { from: anonymousPlayer }).should.be.rejectedWith(Error);
+        });
+
+        it('Should not be able to report first player if second move was not made', async () => {
+            const gameKey = await startTheGame();
+            await instance.joinTheGame(gameKey, { from: player2, value: VALUE });
+            
+            await travelToFuture(10000);
+
+            await instance.reportPlayer1(gameKey, { from: player2 }).should.be.rejectedWith(Error);
         });
     });
 
@@ -340,7 +414,7 @@ contract('RockPaperScissors', accounts => {
             const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player1 });
             await instance.startTheGame(gameKey, BET, CLOSING_TIME, { from: player1, value: VALUE });
             await travelToFuture(10000);
-            await instance.reportFailedGame(gameKey, { from: player1 });
+            await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player1 });
 
             // Get account initial balance
             const initialBalance = web3.utils.toBN(await web3.eth.getBalance(player1));
@@ -367,10 +441,7 @@ contract('RockPaperScissors', accounts => {
             const gameKey = await instance.generateGameKey(SECRET, MOVES.SCISSORS, { from: player1 });
             await instance.startTheGame(gameKey, BET, CLOSING_TIME, { from: player1, value: VALUE });
             await travelToFuture(10000);
-            await instance.reportFailedGame(gameKey, { from: player1 });
-
-            // Get account initial balance
-            const initialBalance = web3.utils.toBN(await web3.eth.getBalance(player1));
+            await instance.reportFailedGame(SECRET, MOVES.SCISSORS, { from: player1 });
 
             // Withdrawing
             await instance.withdraw(1000, { from: player1 }).should.be.rejectedWith(Error);

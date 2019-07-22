@@ -17,13 +17,12 @@ import "./Taxed.sol";
  * second player can claim his win after "closingTime + closingTimeOffset" by calling "reportUncooperativeGame" function
  */
 contract RockPaperScissors is Taxed {
-    enum Moves { ROCK, PAPER, SCISSORS }
+    enum Moves { UNSET, ROCK, PAPER, SCISSORS }
 
     struct Game {
-        address player1;
-        address player2;
         uint256 bet;
         uint256 closingTime; // time after which game will be closed for betting
+        address player2;
         Moves move2; // second players move
     }
 
@@ -31,9 +30,13 @@ contract RockPaperScissors is Taxed {
 
     /**
      * @notice Amount of additional time in milliseconds, after game closingTime
-     * in which first player can provide his secret in order for the contract to decide on the winner
+     * This time is provided for both 1st and 2nd players
      *
-     * This is used to ensure that the second player will not try to instantenously join the game at the end and "reportUncooperativeGame"
+     * This is used -
+     * 1st time:
+     * to ensure that the 2nd player has enough time to make his move
+     * 2nd time:
+     * to ensure that the 1st player has enough time to call the "play" function
      */
     uint256 public closingTimeOffset;
 
@@ -41,12 +44,14 @@ contract RockPaperScissors is Taxed {
 
     mapping (address => uint256) public funds;
 
-    event LogGameStarted(address indexed player1, bytes32 indexed gameKey, uint256 bet, uint256 closingTime);
-    event LogGameJoined(address indexed player2, bytes32 indexed gameKey);
+    event LogGameStarted(address indexed player, bytes32 indexed gameKey, uint256 bet, uint256 closingTime);
+    event LogGameJoined(address indexed player, bytes32 indexed gameKey);
+    event LogSecondMoveMade(address indexed player, bytes32 indexed gameKey);
     event LogWin(bytes32 indexed gameKey, address indexed winner, address indexed loser, uint256 bet, Moves move1, Moves move2);
     event LogDraw(bytes32 indexed gameKey, address indexed player1, address indexed player2, uint256 bet, Moves move);
     event LogFailedGame(bytes32 indexed gameKey, address indexed player, uint256 bet);
-    event LogUncooperativeGame(bytes32 indexed gameKey, address indexed winner, address indexed loser, uint256 bet);
+    event LogFirstPlayerReported(bytes32 indexed gameKey, address indexed winner, uint256 bet);
+    event LogSecondPlayerReported(bytes32 indexed gameKey, address indexed winner, uint256 bet);
     event LogWithdrawal(address indexed player, uint256 amountWithdrawn);
 
     /**
@@ -67,7 +72,8 @@ contract RockPaperScissors is Taxed {
      * @param move first players move
      */
     function generateGameKey(bytes32 secret, Moves move) public view returns(bytes32) {
-        // sender added for more secure encoding
+        require(move != Moves.UNSET, "Invalid move!");
+        // sender added for more secure encoding and also to save some gas, by not keeping him in Game struct
         return keccak256(abi.encodePacked(secret, msg.sender, move, address(this)));
     }
 
@@ -78,7 +84,7 @@ contract RockPaperScissors is Taxed {
      * @param closingTime duration of the time in milliseconds after which game will be closed for betting
      */
     function startTheGame(bytes32 gameKey, uint256 bet, uint256 closingTime) public payable whenNotPaused returns(bool) {
-        require(games[gameKey].player1 == address(0), "Key already used");
+        require(games[gameKey].bet == 0, "Key already used");
 
         uint256 tax = getTax();
         require(bet > tax, "Bet should be more than tax!");
@@ -89,7 +95,6 @@ contract RockPaperScissors is Taxed {
 
         closingTime = block.timestamp.add(closingTime);
         // Creating game
-        games[gameKey].player1 = msg.sender;
         games[gameKey].bet = bet;
         games[gameKey].closingTime = closingTime;
 
@@ -101,9 +106,8 @@ contract RockPaperScissors is Taxed {
     /**
      * @notice This is where second player joins the game
      * @param gameKey key of the game to join
-     * @param move second players move
      */
-    function joinTheGame(bytes32 gameKey, Moves move) public payable whenNotPaused returns(bool) {
+    function joinTheGame(bytes32 gameKey) public payable whenNotPaused returns(bool) {
         uint256 bet = games[gameKey].bet;
         require(bet > 0, "Game with given key doesn't exist");
         require(games[gameKey].player2 == address(0), "Can't join ongoing game!");
@@ -112,9 +116,27 @@ contract RockPaperScissors is Taxed {
         _fundGame(bet);
 
         games[gameKey].player2 = msg.sender;
-        games[gameKey].move2 = move;
 
         emit LogGameJoined(msg.sender, gameKey);
+
+        return true;
+    }
+
+    /**
+     * @notice This is where second player makes his move
+     * @param gameKey key of the game to join
+     * @param move second players move
+     *
+     * @dev Making move seperated from "joinTheGame" to avoid "racing" scenario:
+     * first player sees second players "wining" transaction and decides to join the game
+     * as a second player with higher amount of gas
+     */
+    function makeSecondMove(bytes32 gameKey, Moves move) public whenNotPaused returns(bool) {
+        require(games[gameKey].player2 == msg.sender, "You can't make a move for this game!");
+        require(move != Moves.UNSET, "Invalid move!");
+
+        games[gameKey].move2 = move;
+        emit LogSecondMoveMade(msg.sender, gameKey);
 
         return true;
     }
@@ -137,42 +159,40 @@ contract RockPaperScissors is Taxed {
 
     /**
      * @notice This is where first player inputs his secret to find out the winner
-     * @param gameKey game key
-     * @param move first players move used in the "game key" generation process
      * @param secret secret used in the "game key" generation process
+     * @param move first players move used in the "game key" generation process
      */
-    function play(bytes32 gameKey, Moves move, bytes32 secret) external whenNotPaused returns(bool) {
-        address player2 = games[gameKey].player2;
-        require(player2 != address(0), "Game for 2 players with given key not found!");
-        address player1 = games[gameKey].player1;
-        require(gameKey == keccak256(abi.encodePacked(secret, player1, move, address(this))), "Provided secret or move are incorrect!");
-
-        uint256 bet = games[gameKey].bet;
+    function play(bytes32 secret, Moves move) external whenNotPaused returns(bool) {
+        bytes32 gameKey = generateGameKey(secret, move);
         Moves move2 = games[gameKey].move2;
+        require(move2 != Moves.UNSET, "Game with given secret and move which would be ready to play not found!");
+
+        address player2 = games[gameKey].player2;
+        uint256 bet = games[gameKey].bet;
 
         if (move == move2) {// draw
-            funds[player1] = funds[player1].add(bet);
+            funds[msg.sender] = funds[msg.sender].add(bet);
             funds[player2] = funds[player2].add(bet);
 
-            emit LogDraw(gameKey, player1, player2, bet, move);
+            emit LogDraw(gameKey, msg.sender, player2, bet, move);
         } else {
             address winner;
             address loser;
             if (move < move2) {
                 if (uint(move2) - uint(move) == 1) {
                     winner = player2;
-                    loser = player1;
+                    loser = msg.sender;
                 } else {
-                    winner = player1;
+                    winner = msg.sender;
                     loser = player2;
                 }
             } else {
                 if (uint(move) - uint(move2) == 1) {
-                    winner = player1;
+                    winner = msg.sender;
                     loser = player2;
                 } else {
                     winner = player2;
-                    loser = player1;
+                    loser = msg.sender;
                 }
             }
 
@@ -182,7 +202,6 @@ contract RockPaperScissors is Taxed {
         }
 
         delete games[gameKey].player2;
-        delete games[gameKey].bet;
         delete games[gameKey].closingTime;
         delete games[gameKey].move2;
 
@@ -191,18 +210,19 @@ contract RockPaperScissors is Taxed {
 
     /**
      * @notice This is where first player can end the game after closingTime is over
-     * @param gameKey game key
+     * @param secret secret used in the "game key" generation process
+     * @param move first players move used in the "game key" generation process
      */
-    function reportFailedGame(bytes32 gameKey) public whenNotPaused returns(bool) {
+    function reportFailedGame(bytes32 secret, Moves move) public whenNotPaused returns(bool) {
+        bytes32 gameKey = generateGameKey(secret, move);
         uint256 bet = games[gameKey].bet;
-        require(bet > 0, "No active games for given key!");
+        require(bet > 0, "No active games for given secret and move!");
         require(games[gameKey].player2 == address(0), "Game isn't failed!");
         require(games[gameKey].closingTime < block.timestamp, "Game isn't over yet!");
 
-        address player = games[gameKey].player1;
-        emit LogFailedGame(gameKey, player, bet);
+        emit LogFailedGame(gameKey, msg.sender, bet);
 
-        funds[player] = funds[player].add(bet);
+        funds[msg.sender] = funds[msg.sender].add(bet);
 
         delete games[gameKey].bet;
         delete games[gameKey].closingTime;
@@ -211,21 +231,42 @@ contract RockPaperScissors is Taxed {
     }
 
     /**
-     * @notice This is where second player can claim his win after (closingTime + closingTimeOffset) is over
-     * @param gameKey game key
+     * @notice This is where first player can claim his win after (closingTime + closingTimeOffset) is over
+     * @param secret secret used in the "game key" generation process
+     * @param move first players move used in the "game key" generation process
      */
-    function reportUncooperativeGame(bytes32 gameKey) public whenNotPaused returns(bool) {
-        address player2 = games[gameKey].player2;
-        require(player2 != address(0), "Game for 2 players with given key not found!");
+    function reportPlayer2(bytes32 secret, Moves move) public whenNotPaused returns(bool) {
+        bytes32 gameKey = generateGameKey(secret, move);
+        require(games[gameKey].player2 != address(0), "Game has no second player, it can not be reported!");
+        require(games[gameKey].move2 == Moves.UNSET, "Second player made a move, this game can not be reported!");
         require(games[gameKey].closingTime.add(closingTimeOffset) < block.timestamp, "Game isn't over yet!");
 
         uint256 bet = games[gameKey].bet;
-        emit LogUncooperativeGame(gameKey, player2, games[gameKey].player1, bet);
+        emit LogSecondPlayerReported(gameKey, msg.sender, bet);
+
+        _rewardWinner(msg.sender, bet);
+
+        delete games[gameKey].player2;
+        delete games[gameKey].closingTime;
+
+        return true;
+    }
+
+    /**
+     * @notice This is where second player can claim his win after (closingTime + 2 * closingTimeOffset) is over
+     * @param gameKey game key
+     */
+    function reportPlayer1(bytes32 gameKey) public whenNotPaused returns(bool) {
+        require(games[gameKey].move2 != Moves.UNSET, "Game with given key can not be reported!");
+        require(games[gameKey].closingTime.add(closingTimeOffset).add(closingTimeOffset) < block.timestamp, "Game isn't over yet!");
+
+        address player2 = games[gameKey].player2;
+        uint256 bet = games[gameKey].bet;
+        emit LogFirstPlayerReported(gameKey, player2, bet);
 
         _rewardWinner(player2, bet);
 
         delete games[gameKey].player2;
-        delete games[gameKey].bet;
         delete games[gameKey].closingTime;
         delete games[gameKey].move2;
 
