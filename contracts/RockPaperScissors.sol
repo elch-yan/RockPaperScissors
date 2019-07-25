@@ -1,6 +1,6 @@
 pragma solidity 0.5.5;
 
-import "./Taxed.sol";
+import './PayableRPS.sol';
 
 /**
  * @title Classical Rock Paper Scissors game
@@ -18,7 +18,7 @@ import "./Taxed.sol";
  * 3. In case if the first player turnes uncooperative (e.g. he does not provide his secret for determination of the winner)
  * second player can claim his win after "closingTime + 2 * closingTimeOffset" by calling "reportPlayer1" function
  */
-contract RockPaperScissors is Taxed {
+contract RockPaperScissors is PayableRPS {
     enum Moves { UNSET, ROCK, PAPER, SCISSORS }
 
     struct Game {
@@ -44,8 +44,6 @@ contract RockPaperScissors is Taxed {
 
     mapping (bytes32 => Game) public games;
 
-    mapping (address => uint256) public funds;
-
     event LogGameStarted(address indexed player, bytes32 indexed gameKey, uint256 bet, uint256 closingTime);
     event LogGameJoined(address indexed player, bytes32 indexed gameKey);
     event LogSecondMoveMade(address indexed player, bytes32 indexed gameKey);
@@ -54,7 +52,6 @@ contract RockPaperScissors is Taxed {
     event LogFailedGame(bytes32 indexed gameKey, address indexed player, uint256 bet);
     event LogFirstPlayerReported(bytes32 indexed gameKey, address indexed winner, uint256 bet);
     event LogSecondPlayerReported(bytes32 indexed gameKey, address indexed winner, uint256 bet);
-    event LogWithdrawal(address indexed player, uint256 amountWithdrawn);
 
     /**
      * @notice Constructor function
@@ -69,14 +66,33 @@ contract RockPaperScissors is Taxed {
     }
 
     /**
-     * @notice Generates key for a game
-     * @param secret key chones by the first player
+     * @notice Generates keys for a game
+     * @param secret key chosen by the first player
      * @param move first players move
      */
-    function generateGameKey(bytes32 secret, Moves move) public view returns(bytes32) {
+    function generateGameSecretAndKey(bytes32 secret, Moves move) public view returns(bytes32 gameKey, bytes32 gameSecret) {
         require(move != Moves.UNSET, "Invalid move!");
+
+        // generating new more secure key for this game
+        gameSecret = keccak256(abi.encodePacked(secret, block.timestamp));
         // sender added for more secure encoding and also to save some gas, by not keeping him in Game struct
-        return keccak256(abi.encodePacked(secret, msg.sender, move, address(this)));
+        gameKey = _generateGameKey(gameSecret, move);
+
+        return (gameKey, gameSecret);
+    }
+
+    /**
+     * @notice Generates key for a game
+     * @param gameSecret generated secret
+     * @param move first players move
+     */
+    function _generateGameKey(bytes32 gameSecret, Moves move) internal view returns(bytes32) {
+        require(move != Moves.UNSET, "Invalid move!");
+
+        // sender added for more secure encoding and also to save some gas, by not keeping him in Game struct
+        bytes32 gameKey = keccak256(abi.encodePacked(gameSecret, msg.sender, move, address(this)));
+
+        return gameKey;
     }
 
     /**
@@ -88,7 +104,6 @@ contract RockPaperScissors is Taxed {
     function startTheGame(bytes32 gameKey, uint256 bet, uint256 closingTime) public payable whenRunning returns(bool) {
         require(closingTime > 0, "Closing time should be more than 0!");
         require(closingTime < maxClosingTime, "Closing time should be less than maxClosingTime!");
-        require(games[gameKey].bet == 0, "Key already used");
 
         uint256 tax = getTax();
         require(bet > tax, "Bet should be more than tax!");
@@ -136,25 +151,10 @@ contract RockPaperScissors is Taxed {
     function makeSecondMove(bytes32 gameKey, Moves move) public whenRunning returns(bool) {
         require(move != Moves.UNSET, "Invalid move!");
         require(games[gameKey].player2 == msg.sender, "You can't make a move for this game!");
+        require(games[gameKey].move2 == Moves.UNSET, "Move already set!");
 
         games[gameKey].move2 = move;
         emit LogSecondMoveMade(msg.sender, gameKey);
-
-        return true;
-    }
-
-    /**
-     * @dev If necessary retrieves funds for game from players existing funds
-     * @param bet bet
-     */
-    function _fundGame(uint256 bet) internal returns(bool) {
-        uint256 fromFunds = bet.sub(msg.value, "Bet is less than value passed!");
-        // Part or all of the bet can come from funds
-        if (fromFunds > 0) {
-            uint256 finalFund = funds[msg.sender].sub(fromFunds, "Bet exceeds available funds!");
-
-            funds[msg.sender] = finalFund;
-        }
 
         return true;
     }
@@ -165,7 +165,7 @@ contract RockPaperScissors is Taxed {
      * @param move first players move used in the "game key" generation process
      */
     function play(bytes32 secret, Moves move) external whenRunning returns(bool) {
-        bytes32 gameKey = generateGameKey(secret, move);
+        bytes32 gameKey = _generateGameKey(secret, move);
         Moves move2 = games[gameKey].move2;
         require(move2 != Moves.UNSET, "Game with given secret and move which would be ready to play not found!");
 
@@ -173,8 +173,8 @@ contract RockPaperScissors is Taxed {
         uint256 bet = games[gameKey].bet;
 
         if (move == move2) {// draw
-            funds[msg.sender] = funds[msg.sender].add(bet);
-            funds[player2] = funds[player2].add(bet);
+            _returnBet(msg.sender, bet);
+            _returnBet(player2, bet);
 
             emit LogDraw(gameKey, msg.sender, player2, bet, move);
         } else {
@@ -203,9 +203,7 @@ contract RockPaperScissors is Taxed {
             _rewardWinner(winner, bet);
         }
 
-        delete games[gameKey].player2;
-        delete games[gameKey].closingTime;
-        delete games[gameKey].move2;
+        delete games[gameKey];
 
         return true;
     }
@@ -216,7 +214,7 @@ contract RockPaperScissors is Taxed {
      * @param move first players move used in the "game key" generation process
      */
     function reportFailedGame(bytes32 secret, Moves move) public whenRunning returns(bool) {
-        bytes32 gameKey = generateGameKey(secret, move);
+        bytes32 gameKey = _generateGameKey(secret, move);
         uint256 bet = games[gameKey].bet;
         require(bet > 0, "No active games for given secret and move!");
         require(games[gameKey].player2 == address(0), "Game isn't failed!");
@@ -224,10 +222,9 @@ contract RockPaperScissors is Taxed {
 
         emit LogFailedGame(gameKey, msg.sender, bet);
 
-        funds[msg.sender] = funds[msg.sender].add(bet);
+        _returnBet(msg.sender, bet);
 
-        delete games[gameKey].bet;
-        delete games[gameKey].closingTime;
+        delete games[gameKey];
 
         return true;
     }
@@ -238,7 +235,7 @@ contract RockPaperScissors is Taxed {
      * @param move first players move used in the "game key" generation process
      */
     function reportPlayer2(bytes32 secret, Moves move) public whenRunning returns(bool) {
-        bytes32 gameKey = generateGameKey(secret, move);
+        bytes32 gameKey = _generateGameKey(secret, move);
         require(games[gameKey].player2 != address(0), "Game has no second player, it can not be reported!");
         require(games[gameKey].move2 == Moves.UNSET, "Second player made a move, this game can not be reported!");
         require(games[gameKey].closingTime.add(closingTimeOffset) < block.timestamp, "Game isn't over yet!");
@@ -248,8 +245,7 @@ contract RockPaperScissors is Taxed {
 
         _rewardWinner(msg.sender, bet);
 
-        delete games[gameKey].player2;
-        delete games[gameKey].closingTime;
+        delete games[gameKey];
 
         return true;
     }
@@ -270,36 +266,7 @@ contract RockPaperScissors is Taxed {
 
         _rewardWinner(player2, bet);
 
-        delete games[gameKey].player2;
-        delete games[gameKey].closingTime;
-        delete games[gameKey].move2;
-
-        return true;
-    }
-
-    /**
-     * @dev updates winners funds and calls payTax
-     * @param winner address of the winner
-     * @param bet bet
-     */
-    function _rewardWinner(address winner, uint256 bet) internal returns(bool) {
-        uint256 reward = bet.mul(2).sub(getTax());
-        collectTax(winner);
-        funds[winner] = funds[winner].add(reward);
-    }
-
-    /**
-     * @notice This is where players can withdraw their funds
-     * @param amount amount of wei to withdraw
-     */
-    function withdraw(uint256 amount) external whenRunning returns(bool) {
-        uint256 finalFund = funds[msg.sender].sub(amount, "No enough funds!");
-
-        funds[msg.sender] = finalFund;
-
-        emit LogWithdrawal(msg.sender, amount);
-
-        msg.sender.transfer(amount);
+        delete games[gameKey];
 
         return true;
     }
